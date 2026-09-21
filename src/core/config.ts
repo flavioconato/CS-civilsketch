@@ -36,6 +36,9 @@ export const CROP_WARN_MAX_CELLS = 8e6;
 export const VALID_Z_MIN = -1000;
 export const VALID_Z_MAX = 9000;
 
+/** Lato massimo (px) dell'ortofoto dopo il ricampionamento, per restare dentro i limiti pratici di una texture WebGL. */
+export const ORTOFOTO_MAX_PX = 4096;
+
 /* ---------- Griglia, snap e tracce (§5, §6 SPEC) ---------- */
 
 export const SNAP_STEPS = [0.25, 0.5, 1, 2] as const;
@@ -53,6 +56,9 @@ export const TRACK_VERTEX_RADIUS = 0.7;
 
 /** Distanza massima in pixel schermo per considerare un click "sopra" un vertice di traccia. */
 export const TRACK_VERTEX_HIT_PX = 12;
+
+/** Distanza in pixel entro cui un nuovo vertice si aggancia a un vertice di un'altra traccia. */
+export const VERTEX_SNAP_HIT_PX = 14;
 
 /* ---------- Modifica terreno: sezioni di canale/rilevato (§7 SPEC) ---------- */
 
@@ -91,6 +97,7 @@ export const TRACCIA_KIND_LABELS = {
   traccia: 'Traccia semplice',
   livelletta: 'Livelletta',
   terreno: 'Scavo o riporto',
+  vasca: 'Vasca (scavo a contorno)',
   oggetto: 'Oggetto da inserire',
 } as const;
 
@@ -98,6 +105,7 @@ export const TRACCIA_KIND_HINTS = {
   traccia: 'Solo polilinea, senza quote di progetto.',
   livelletta: 'Traccia con profilo di progetto, senza modificare il terreno.',
   terreno: 'Canale, rilevato o trincea: modifica il terreno lungo una sezione.',
+  vasca: 'Disegna il contorno: scava verso l\'interno con una scarpata fino a una quota di fondo.',
   oggetto: 'Un oggetto separato (muro, barriera o briglia) che si appoggia al terreno senza modificarlo.',
 } as const;
 
@@ -105,6 +113,20 @@ export const TRACCIA_KIND_HINTS = {
 export const MURO_DEFAULT_ALTEZZA = 2;
 export const MURO_DEFAULT_SPESSORE = 0.4;
 export const MURO_DEFAULT_FONDAZIONE = 0.5;
+
+/* ---------- Vasca: scavo a pianta poligonale (§8.2 SPEC) ---------- */
+
+/** Valori segnaposto per una vasca di default: da impostare secondo gli standard dell'utente. */
+export const VASCA_DEFAULT_PROFONDITA = 2;
+export const VASCA_DEFAULT_SCARPATA = 1.5;
+
+/* ---------- Rivestimento di uno scavo (canale o vasca) ---------- */
+
+/** Spessore segnaposto del rivestimento: da impostare secondo gli standard dell'utente. */
+export const RIVESTIMENTO_DEFAULT_SPESSORE = 0.15;
+
+/** Colore neutro del guscio di rivestimento (cls), indipendente dalla categoria dell'opera. */
+export const RIVESTIMENTO_COLOR = '#c7c6bd';
 
 /* ---------- Accumulo a monte di uno sbarramento (§8.2/8.3/8.4 SPEC) ---------- */
 

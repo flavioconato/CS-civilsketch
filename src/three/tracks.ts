@@ -1,13 +1,15 @@
 import * as THREE from 'three';
 import type { Dem, OperaCategoria, Traccia } from '../core/types';
 import { sceneY } from './coords';
-import { formatChainage, pointAtProgressive, progressives, sampledProgressives, trackLength } from '../core/polyline';
+import {
+  formatChainage, nearestOnPolygon, pointAtProgressive, pointInPolygon, progressives, sampledProgressives, trackLength,
+} from '../core/polyline';
 import { livellettaElevation } from '../core/livelletta';
 import { muroCrestElevation, MURO_MIN_HEIGHT } from '../core/muro';
 import { computeAccumuloField } from '../core/accumulo';
 import { heightAt } from '../dem/dem';
 import {
-  OPERA_CATEGORY_COLORS, TRACK_DESIGN_COLOR, TRACK_NATURAL_COLOR, TRACK_SAMPLE_STEP,
+  OPERA_CATEGORY_COLORS, RIVESTIMENTO_COLOR, TRACK_DESIGN_COLOR, TRACK_NATURAL_COLOR, TRACK_SAMPLE_STEP,
   TRACK_TUBE_RADIUS, TRACK_VERTEX_COLOR, TRACK_VERTEX_RADIUS,
 } from '../core/config';
 import type { ThreeContext } from './scene';
@@ -21,6 +23,8 @@ interface TrackVisual {
   wall: THREE.Mesh | null;
   /** Non smaltita qui: il suo ciclo di vita è nella cache `accumuloCache` (si veda `rebuild`). */
   accumulo: THREE.Mesh | null;
+  /** Guscio di rivestimento (canale o vasca in scavo, §7/§8.2 SPEC), senza offset geometrico. */
+  rivestimento: THREE.Mesh | null;
   vertexMarkers: THREE.Mesh[];
   labels: HTMLDivElement[];
   labelPositions: THREE.Vector3[];
@@ -41,6 +45,9 @@ export class TracksLayer {
   private designMatByCategory = new Map<OperaCategoria | 'default', THREE.MeshStandardMaterial>();
   private wallMatByCategory = new Map<OperaCategoria | 'default', THREE.MeshStandardMaterial>();
   private accumuloMatByType = new Map<'acqua' | 'detrito', THREE.MeshStandardMaterial>();
+  private rivestimentoMat = new THREE.MeshStandardMaterial({
+    color: RIVESTIMENTO_COLOR, roughness: 0.6, side: THREE.DoubleSide,
+  });
   /**
    * Ultima mesh di accumulo calcolata per traccia, tenuta viva fuori dal ciclo di
    * distruzione/ricostruzione di `rebuild`: il campo 2D è pesante (flood-fill sul DTM), quindi
@@ -101,6 +108,7 @@ export class TracksLayer {
     if (v.natural) { v.natural.geometry.dispose(); this.group.remove(v.natural); }
     if (v.design) { v.design.geometry.dispose(); this.group.remove(v.design); }
     if (v.wall) { v.wall.geometry.dispose(); this.group.remove(v.wall); }
+    if (v.rivestimento) { v.rivestimento.geometry.dispose(); this.group.remove(v.rivestimento); }
     // v.accumulo NON si smaltisce qui: vive in accumuloCache (si veda `rebuild`).
     v.vertexMarkers.forEach((m) => this.group.remove(m));
     v.labels.forEach((el) => el.remove());
@@ -182,6 +190,110 @@ export class TracksLayer {
   }
 
   /**
+   * Guscio di rivestimento di un canale in scavo (§7 SPEC): stessa striscia rigata di
+   * `buildWallMesh`, ma con tante colonne quanti sono i punti del profilo disegnato (non solo 4),
+   * così segue esattamente la forma della sezione. Nessun offset verso l'esterno: coincide con la
+   * superficie di progetto (`livellettaElevation(s) + dz` di ogni punto, la stessa che
+   * `computeProjectDem` usa per scavare) — una scelta deliberata di semplicità (§2 SPEC).
+   */
+  private buildRivestimentoCanaleMesh(track: Traccia, displayDem: Dem, exag: number): THREE.Mesh | null {
+    const sezione = track.sezione;
+    if (!sezione || sezione.tipo !== 'canale' || !sezione.rivestimento.attivo) return null;
+    if (sezione.punti.length < 2 || track.vertices.length < 2) return null;
+    const length = trackLength(track.vertices);
+    const sList = this.sampledS(length);
+    const n = sList.length;
+    const cols = sezione.punti.length;
+
+    const pos: number[] = [];
+    for (let i = 0; i < n; i++) {
+      const s = sList[i];
+      const p = pointAtProgressive(track.vertices, s);
+      const a = pointAtProgressive(track.vertices, Math.max(0, s - 0.5));
+      const b = pointAtProgressive(track.vertices, Math.min(length, s + 0.5));
+      let tx = b.x - a.x, tz = b.z - a.z;
+      const tl = Math.hypot(tx, tz) || 1;
+      tx /= tl; tz /= tl;
+      const nx = -tz, nz = tx;
+      const baseZ = livellettaElevation(track.livelletta, s, length);
+      for (const pt of sezione.punti) {
+        const y = (baseZ + pt.dz - displayDem.zmin) * exag;
+        pos.push(p.x + nx * pt.d, y, p.z + nz * pt.d);
+      }
+    }
+
+    const idx: number[] = [];
+    const at = (i: number, j: number) => i * cols + j;
+    for (let i = 0; i < n - 1; i++) {
+      for (let j = 0; j < cols - 1; j++) {
+        idx.push(at(i, j), at(i + 1, j), at(i + 1, j + 1), at(i, j), at(i + 1, j + 1), at(i, j + 1));
+      }
+    }
+
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pos), 3));
+    g.setIndex(idx);
+    g.computeVertexNormals();
+    return new THREE.Mesh(g, this.rivestimentoMat);
+  }
+
+  /**
+   * Guscio di rivestimento di una vasca (§8.2 SPEC): stesso schema a griglia di `buildAccumuloMesh`,
+   * ma dentro il poligono invece che nell'area allagata, con la stessa formula di scavo di
+   * `excavateVasca` (`core/terrainOps.ts`) invece di una quota di allagamento.
+   */
+  private buildRivestimentoVascaMesh(track: Traccia, displayDem: Dem, exag: number): THREE.Mesh | null {
+    const vasca = track.vasca;
+    if (!vasca || !vasca.rivestimento.attivo || track.vertices.length < 3) return null;
+    const tanScarpata = 1 / Math.max(vasca.scarpataRapporto, 0.05);
+
+    let xmin = Infinity, xmax = -Infinity, zmin = Infinity, zmax = -Infinity;
+    for (const v of track.vertices) {
+      xmin = Math.min(xmin, v.x); xmax = Math.max(xmax, v.x);
+      zmin = Math.min(zmin, v.z); zmax = Math.max(zmax, v.z);
+    }
+    const c0 = Math.max(0, Math.floor(xmin / displayDem.cell));
+    const c1 = Math.min(displayDem.w - 1, Math.ceil(xmax / displayDem.cell));
+    const r0 = Math.max(0, Math.floor(zmin / displayDem.cell));
+    const r1 = Math.min(displayDem.h - 1, Math.ceil(zmax / displayDem.cell));
+    const cols = c1 - c0 + 1, rows = r1 - r0 + 1;
+    if (cols < 2 || rows < 2) return null;
+
+    const vertIndex = new Int32Array(cols * rows).fill(-1);
+    const pos: number[] = [];
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const x = (c0 + c) * displayDem.cell, z = (r0 + r) * displayDem.cell;
+        if (!pointInPolygon(track.vertices, { x, z })) continue;
+        const near = nearestOnPolygon(track.vertices, { x, z });
+        const orlo = heightAt(displayDem, near.x, near.z);
+        const zProject = Math.max(vasca.quotaFondo, orlo - tanScarpata * near.dist);
+        const li = r * cols + c;
+        vertIndex[li] = pos.length / 3;
+        pos.push(x, (zProject - displayDem.zmin) * exag, z);
+      }
+    }
+    if (!pos.length) return null;
+
+    const idx: number[] = [];
+    for (let r = 0; r < rows - 1; r++) {
+      for (let c = 0; c < cols - 1; c++) {
+        const a = vertIndex[r * cols + c], b = vertIndex[r * cols + c + 1];
+        const cc = vertIndex[(r + 1) * cols + c], d = vertIndex[(r + 1) * cols + c + 1];
+        if (a < 0 || b < 0 || cc < 0 || d < 0) continue;
+        idx.push(a, cc, b, b, cc, d);
+      }
+    }
+    if (!idx.length) return null;
+
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pos), 3));
+    g.setIndex(new THREE.BufferAttribute(new (pos.length / 3 > 65535 ? Uint32Array : Uint16Array)(idx), 1));
+    g.computeVertexNormals();
+    return new THREE.Mesh(g, this.rivestimentoMat);
+  }
+
+  /**
    * Superficie di accumulo a monte di uno sbarramento (§8.2/8.3/8.4): non più una fascia larga
    * quanto il coronamento, ma la vera area 2D del campo calcolato da `computeAccumuloField`, che
    * incontra il terreno a 360° (fianchi compresi). Si emette una faccia solo dove tutti e quattro
@@ -239,14 +351,18 @@ export class TracksLayer {
     for (const id of [...this.accumuloCache.keys()]) if (!liveIds.has(id)) this.disposeAccumuloCacheEntry(id);
 
     for (const track of tracks) {
-      const visual: TrackVisual = { natural: null, design: null, wall: null, accumulo: null, vertexMarkers: [], labels: [], labelPositions: [] };
+      const visual: TrackVisual = {
+        natural: null, design: null, wall: null, accumulo: null, rivestimento: null, vertexMarkers: [], labels: [], labelPositions: [],
+      };
 
       if (track.vertices.length >= 2) {
-        const length = trackLength(track.vertices);
-        const sList = this.sampledS(length);
-
-        const naturalPts = sList.map((s) => {
-          const p = pointAtProgressive(track.vertices, s);
+        // Una vasca è un contorno chiuso (§8.2 SPEC): il tubo "terreno naturale" deve richiudersi
+        // sul primo vertice, cosa che canale/rilevato/muro (assi aperti) non vogliono.
+        const tubeVertices = track.kind === 'vasca' ? [...track.vertices, track.vertices[0]] : track.vertices;
+        const tubeLength = trackLength(tubeVertices);
+        const tubeSList = this.sampledS(tubeLength);
+        const naturalPts = tubeSList.map((s) => {
+          const p = pointAtProgressive(tubeVertices, s);
           return new THREE.Vector3(p.x, sceneY(naturalDem, exag, p.x, p.z) + DRAPE_OFFSET, p.z);
         });
         visual.natural = this.buildTube(naturalPts, this.naturalMat);
@@ -264,14 +380,23 @@ export class TracksLayer {
             if (mesh) { this.accumuloCache.set(track.id, mesh); this.group.add(mesh); }
           }
           visual.accumulo = this.accumuloCache.get(track.id) ?? null;
+        } else if (track.kind === 'vasca') {
+          // Niente tubo "di progetto" (nessuna livelletta significativa): la forma scavata si vede
+          // già nel terreno di progetto, come per canale/rilevato.
+          visual.rivestimento = this.buildRivestimentoVascaMesh(track, displayDem, exag);
+          if (visual.rivestimento) this.group.add(visual.rivestimento);
         } else {
-          const designPts = sList.map((s) => {
+          const length = trackLength(track.vertices);
+          const designPts = this.sampledS(length).map((s) => {
             const p = pointAtProgressive(track.vertices, s);
             const z = livellettaElevation(track.livelletta, s, length);
             return new THREE.Vector3(p.x, (z - naturalDem.zmin) * exag + DRAPE_OFFSET, p.z);
           });
           visual.design = this.buildTube(designPts, this.designMaterial(track.categoria));
           if (visual.design) this.group.add(visual.design);
+
+          visual.rivestimento = this.buildRivestimentoCanaleMesh(track, displayDem, exag);
+          if (visual.rivestimento) this.group.add(visual.rivestimento);
         }
       }
 

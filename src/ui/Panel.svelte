@@ -12,6 +12,13 @@
   let exagLive = $state(appState.exag);
   $effect(() => { exagLive = appState.exag; });
 
+  let ortofotoInput: HTMLInputElement | undefined = $state();
+
+  function handleOrtofotoFile(files: FileList | null): void {
+    const f = files?.[0];
+    if (f) controller.openOrtofoto(f);
+  }
+
   function classLabel(i: number, b: SlopeBreaks): string {
     if (i === 0) return `fino a ${b[0]} %`;
     if (i === 4) return `oltre ${b[3]} %`;
@@ -40,6 +47,37 @@
       {/if}
     </dl>
   </section>
+
+  {#if appState.dem}
+    <section>
+      <h2>
+        Ortofoto
+        <InfoButton text="Carica un'ortofoto GeoTIFF georeferenziata nello stesso sistema di riferimento del DTM: viene drappeggiata sul terreno solo nell'area di sovrapposizione. Non è supportato l'allineamento manuale di immagini non georeferenziate." />
+      </h2>
+      {#if appState.ortofoto}
+        <dl class="kv">
+          <dt>Nome</dt><dd title={appState.ortofoto.name}>{appState.ortofoto.name}</dd>
+        </dl>
+        <div class="row">
+          <label><input type="checkbox" checked={appState.showOrtofoto} onchange={(e) => controller.setOrtofotoVisible((e.currentTarget as HTMLInputElement).checked)}> Mostra</label>
+        </div>
+        <div class="row-stack">
+          <span class="row-stack-label">Opacità <b>{fmt(appState.ortofotoOpacity, 2)}</b></span>
+          <input type="range" min="0" max="1" step="0.05" value={appState.ortofotoOpacity}
+            oninput={(e) => controller.setOrtofotoOpacity(+e.currentTarget.value)}>
+        </div>
+        <div class="row">
+          <button class="btn" onclick={() => controller.removeOrtofoto()}>Rimuovi ortofoto</button>
+        </div>
+      {:else}
+        <button class="btn" onclick={() => ortofotoInput?.click()}>Carica ortofoto GeoTIFF</button>
+        <input
+          bind:this={ortofotoInput} type="file" accept=".tif,.tiff,image/tiff" hidden
+          onchange={(e) => { handleOrtofotoFile(e.currentTarget.files); e.currentTarget.value = ''; }}
+        >
+      {/if}
+    </section>
+  {/if}
 
   <section>
     <h2>Visualizzazione</h2>

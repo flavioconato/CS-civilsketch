@@ -64,15 +64,27 @@ export interface SezionePunto {
 }
 
 /**
+ * Rivestimento di uno scavo (canale o vasca): un guscio sottile reso sulla superficie di scavo,
+ * senza offset geometrico verso l'esterno (coincide con la superficie di progetto, per restare
+ * leggero) — `spessore` serve solo a stimare l'area/volume di rivestimento nel pannello.
+ */
+export interface Rivestimento {
+  attivo: boolean;
+  spessore: number;
+}
+
+/**
  * Sezione trasversale applicata lungo una traccia per modificare il terreno (§7 SPEC).
  * La livelletta della traccia dà la quota di riferimento (fondo canale o piano di un rilevato);
  * `punti` è il profilo disegnato dall'utente, in ordine di distanza `d` crescente (almeno 2 punti).
  * Oltre l'ultimo punto di ciascun lato il profilo prosegue con la stessa pendenza, cosa che
  * permette alle scarpate di raggiungere da sole il terreno naturale (si veda `sectionOffset`).
+ * `rivestimento` ha senso solo per `tipo:'canale'` (uno scavo): un rilevato non si riveste.
  */
 export interface Sezione {
   tipo: SezioneTipo;
   punti: SezionePunto[];
+  rivestimento: Rivestimento;
 }
 
 /** Categoria dell'opera (§12 SPEC): determina colore e, in futuro, icona. */
@@ -83,9 +95,10 @@ export type OperaCategoria = 'ferrovia' | 'idraulica' | 'contenimento' | 'protez
  * - `traccia`: solo polilinea, nessuna quota di progetto.
  * - `livelletta`: traccia con profilo di progetto (§6.2), senza modificare il terreno.
  * - `terreno`: modifica il terreno in scavo o riporto lungo una sezione trasversale (§7).
+ * - `vasca`: scavo a pianta poligonale con fondo piatto e scarpate (§8.2), senza asse lineare.
  * - `oggetto`: un oggetto separato che si appoggia al terreno (es. un muro, §8.3) senza modificarlo.
  */
-export type TracciaKind = 'traccia' | 'livelletta' | 'terreno' | 'oggetto';
+export type TracciaKind = 'traccia' | 'livelletta' | 'terreno' | 'vasca' | 'oggetto';
 
 /**
  * Accumulo trattenuto a monte da uno sbarramento (muro, barriera paramassi/paradetriti, briglia,
@@ -117,6 +130,19 @@ export interface Muro {
   accumulo: Accumulo;
 }
 
+/**
+ * Vasca di laminazione o deposito (§8.2 SPEC): scavo a pianta poligonale (`Traccia.vertices` è il
+ * contorno chiuso, senza duplicare il primo vertice in coda). Dal contorno il terreno scende con
+ * la scarpata `scarpataRapporto` (stesso rapporto orizzontale:verticale di `trapezioPunti`) fino
+ * alla quota piatta `quotaFondo`; non serve una larghezza di fondo esplicita, esce da sola come
+ * per le scarpate di canale/rilevato (si veda `core/terrainOps.ts`).
+ */
+export interface Vasca {
+  quotaFondo: number;
+  scarpataRapporto: number;
+  rivestimento: Rivestimento;
+}
+
 export interface Traccia {
   id: number;
   name: string;
@@ -124,6 +150,7 @@ export interface Traccia {
   vertices: Vertex[];
   livelletta: Livelletta;
   sezione: Sezione | null;
+  vasca: Vasca | null;
   muro: Muro | null;
   categoria: OperaCategoria | null;
 }

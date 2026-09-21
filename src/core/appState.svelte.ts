@@ -19,6 +19,9 @@ export interface DemInfoRow {
 export const appState = $state({
   dem: null as Dem | null,
   demInfo: [] as DemInfoRow[],
+  ortofoto: null as { name: string; epsg: number | null } | null,
+  showOrtofoto: true,
+  ortofotoOpacity: 1,
   tool: 'inspect' as Tool,
   exag: DEFAULT_EXAG,
   points: [] as PuntoQuotato[],
@@ -31,6 +34,7 @@ export const appState = $state({
   trackVolumes: {} as Record<number, TrackVolume>,
   muroStats: {} as Record<number, MuroStats>,
   accumuloStats: {} as Record<number, AccumuloResult>,
+  rivestimentoStats: {} as Record<number, number>,
   presets: defaultPresets() as OperaPreset[],
   nextPresetId: 1,
   gridVisible: false,

@@ -63,6 +63,58 @@ export function distanceToPolyline(vertices: Vertex[], p: Vertex): number {
   return min;
 }
 
+function nearestOnSegment(p: Vertex, a: Vertex, b: Vertex): { dist: number; x: number; z: number } {
+  const abx = b.x - a.x, abz = b.z - a.z;
+  const len2 = abx * abx + abz * abz;
+  if (len2 < 1e-12) return { dist: Math.hypot(p.x - a.x, p.z - a.z), x: a.x, z: a.z };
+  const t = Math.min(Math.max(((p.x - a.x) * abx + (p.z - a.z) * abz) / len2, 0), 1);
+  const x = a.x + abx * t, z = a.z + abz * t;
+  return { dist: Math.hypot(p.x - x, p.z - z), x, z };
+}
+
+/**
+ * Punto più vicino sul contorno di un poligono CHIUSO (il vertice `vertices` non ripete il primo
+ * in coda: qui si aggiunge il segmento di chiusura ultimo→primo). Usata per lo scavo di una vasca
+ * (§8.2 SPEC): la quota di progetto scende dal contorno verso l'interno in funzione di questa
+ * distanza (si veda `core/terrainOps.ts`).
+ */
+export function nearestOnPolygon(vertices: Vertex[], p: Vertex): { dist: number; x: number; z: number } {
+  if (vertices.length === 0) return { dist: Infinity, x: p.x, z: p.z };
+  if (vertices.length === 1) {
+    return { dist: Math.hypot(p.x - vertices[0].x, p.z - vertices[0].z), x: vertices[0].x, z: vertices[0].z };
+  }
+  let best = nearestOnSegment(p, vertices[vertices.length - 1], vertices[0]);
+  for (let i = 1; i < vertices.length; i++) {
+    const cand = nearestOnSegment(p, vertices[i - 1], vertices[i]);
+    if (cand.dist < best.dist) best = cand;
+  }
+  return best;
+}
+
+/** Area del poligono chiuso (formula del laccio di scarpa: valore assoluto, indipendente dal verso). */
+export function polygonArea(vertices: Vertex[]): number {
+  let sum = 0;
+  for (let i = 0, j = vertices.length - 1; i < vertices.length; j = i++) {
+    sum += vertices[j].x * vertices[i].z - vertices[i].x * vertices[j].z;
+  }
+  return Math.abs(sum) / 2;
+}
+
+/**
+ * Vero se il punto è dentro il poligono chiuso (ray casting, pari/dispari). Come `nearestOnPolygon`,
+ * tratta `vertices` come già chiuso (richiude da solo l'ultimo vertice sul primo).
+ */
+export function pointInPolygon(vertices: Vertex[], p: Vertex): boolean {
+  let inside = false;
+  for (let i = 0, j = vertices.length - 1; i < vertices.length; j = i++) {
+    const vi = vertices[i], vj = vertices[j];
+    const crosses = (vi.z > p.z) !== (vj.z > p.z)
+      && p.x < ((vj.x - vi.x) * (p.z - vi.z)) / (vj.z - vi.z) + vi.x;
+    if (crosses) inside = !inside;
+  }
+  return inside;
+}
+
 export interface TrackProjection {
   /** Progressiva del piede della perpendicolare sulla spezzata. */
   s: number;

@@ -7,7 +7,7 @@
   let { controller }: { controller: AppController } = $props();
 
   let showKindMenu = $state(false);
-  const KIND_ORDER: TracciaKind[] = ['traccia', 'livelletta', 'terreno', 'oggetto'];
+  const KIND_ORDER: TracciaKind[] = ['traccia', 'livelletta', 'terreno', 'vasca', 'oggetto'];
 
   function chooseKind(kind: TracciaKind): void {
     controller.startTrackKind(kind);

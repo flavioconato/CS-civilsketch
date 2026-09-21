@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import type {
-  Accumulo, Dem, Livelletta, LivellettaVertex, Muro, OperaCategoria, PickResult, SezionePunto, SezioneTipo, SlopeBreaks,
-  Tool, Traccia, TracciaKind,
+  Accumulo, Dem, Livelletta, LivellettaVertex, Muro, OperaCategoria, PickResult, Rivestimento, SezionePunto, SezioneTipo,
+  SlopeBreaks, Tool, Traccia, TracciaKind, Vasca,
 } from '../core/types';
 import type { DemInfoRow } from '../core/appState.svelte';
 import { appState } from '../core/appState.svelte';
@@ -14,20 +14,22 @@ import {
 import { generateSyntheticDem } from '../dem/synthetic';
 import {
   CROP_FACTORS, CROP_WARN_MAX_CELLS, MURO_DEFAULT_ALTEZZA, MURO_DEFAULT_FONDAZIONE, MURO_DEFAULT_SPESSORE,
-  SEZIONE_DEFAULT_LARGHEZZA, SEZIONE_DEFAULT_SCARPATA, TRACK_VERTEX_HIT_PX,
+  SEZIONE_DEFAULT_LARGHEZZA, SEZIONE_DEFAULT_SCARPATA, TRACK_VERTEX_HIT_PX, VASCA_DEFAULT_PROFONDITA,
+  VASCA_DEFAULT_SCARPATA, VERTEX_SNAP_HIT_PX,
 } from '../core/config';
 import { distanceToPolyline, trackLength } from '../core/polyline';
 import { defaultLivelletta, livellettaVerticesFromTerrain } from '../core/livelletta';
 import { muroStats } from '../core/muro';
 import { computeAccumulo, defaultAccumulo } from '../core/accumulo';
-import { computeProjectDem, trapezioPunti } from '../core/terrainOps';
+import { computeProjectDem, defaultRivestimento, rivestimentoArea, trapezioPunti } from '../core/terrainOps';
+import { loadOrtofoto, ortofotoLocalBounds } from '../dem/ortofoto-io';
 import type { OperaPreset } from '../core/presets';
 import { snapPoint } from '../core/snap';
 import { ThreeContext } from '../three/scene';
 import { buildTerrain, setWire } from '../three/terrain';
 import { pick } from '../three/picking';
 import { fitView, moveWasd, type WasdKeys } from '../three/camera';
-import { extent } from '../three/coords';
+import { extent, sceneY } from '../three/coords';
 import { PointsLayer } from '../three/points';
 import { TracksLayer } from '../three/tracks';
 
@@ -186,6 +188,13 @@ export class AppController {
     }
     appState.muroStats = stats;
 
+    const rivStats: typeof appState.rivestimentoStats = {};
+    for (const t of appState.tracks) {
+      const area = rivestimentoArea(t);
+      if (area !== null) rivStats[t.id] = area;
+    }
+    appState.rivestimentoStats = rivStats;
+
     // L'accumulo scandisce una fascia di terreno a monte: più pesante dei conti sopra, quindi si
     // salta durante il trascinamento di un vertice (si ricalcola al rilascio) per restare fluidi.
     if (this.draggingVertex === null) {
@@ -211,7 +220,46 @@ export class AppController {
     this.points.placePins(this.projectDem, appState.exag);
   }
 
-  private snapXZ(x: number, z: number, bypass: boolean): { x: number; z: number } {
+  /**
+   * Vertice di un'altra traccia entro `VERTEX_SNAP_HIT_PX` in pixel schermo, o null. Permette di
+   * agganciare la fine di un'opera a un'altra già disegnata (es. un canale che finisce su una
+   * briglia): stessa proiezione mondo→schermo già usata da `TracksLayer.hitTestVertex`, ma su
+   * tutti i vertici di tutte le tracce (dato puro in `appState`, non serve passare dal layer three.js).
+   */
+  private findVertexSnap(clientX: number, clientY: number, excludeTrackId: number | null): { x: number; z: number } | null {
+    const dem = this.displayDem;
+    if (!dem) return null;
+    const rect = this.ctx.renderer.domElement.getBoundingClientRect();
+    const tmp = new THREE.Vector3();
+    let best: { x: number; z: number } | null = null;
+    let bestDist = VERTEX_SNAP_HIT_PX;
+    for (const t of appState.tracks) {
+      if (t.id === excludeTrackId) continue;
+      for (const v of t.vertices) {
+        tmp.set(v.x, sceneY(dem, appState.exag, v.x, v.z), v.z);
+        tmp.project(this.ctx.camera);
+        if (tmp.z >= 1) continue;
+        const sx = rect.left + ((tmp.x + 1) / 2) * rect.width;
+        const sy = rect.top + ((1 - tmp.y) / 2) * rect.height;
+        const d = Math.hypot(sx - clientX, sy - clientY);
+        if (d < bestDist) { bestDist = d; best = { x: v.x, z: v.z }; }
+      }
+    }
+    return best;
+  }
+
+  /**
+   * Snap planimetrico: prima ai vertici di un'altra traccia (se vicini in pixel schermo — priorità
+   * a un aggancio deliberato), poi alla griglia. `clientX/clientY` mancanti (es. chiamate senza un
+   * evento puntatore a disposizione) saltano lo snap ai vertici e usano solo la griglia.
+   */
+  private snapXZ(
+    x: number, z: number, bypass: boolean, clientX?: number, clientY?: number, excludeTrackId: number | null = null,
+  ): { x: number; z: number } {
+    if (!bypass && clientX !== undefined && clientY !== undefined) {
+      const vertexSnap = this.findVertexSnap(clientX, clientY, excludeTrackId);
+      if (vertexSnap) return vertexSnap;
+    }
     return snapPoint({ x, z }, appState.snapStep, bypass);
   }
 
@@ -234,11 +282,11 @@ export class AppController {
     if (id !== null) this.selectTrack(id);
   }
 
-  private handleTrackClick(p: PickResult, altKey: boolean): void {
+  private handleTrackClick(p: PickResult, altKey: boolean, clientX: number, clientY: number): void {
     if (appState.drawingTrackId !== null) {
       const track = appState.tracks.find((t) => t.id === appState.drawingTrackId);
       if (!track) return;
-      const sp = this.snapXZ(p.x, p.z, altKey);
+      const sp = this.snapXZ(p.x, p.z, altKey, clientX, clientY, appState.drawingTrackId);
       track.vertices.push({ x: sp.x, z: sp.z });
       this.rebuildTracks();
       this.rebuildTerrainProject();
@@ -249,7 +297,7 @@ export class AppController {
       this.selectTrack(closestId);
     } else {
       const dem = appState.dem!;
-      const sp = this.snapXZ(p.x, p.z, altKey);
+      const sp = this.snapXZ(p.x, p.z, altKey, clientX, clientY, null);
       const id = this.nextTrackId++;
       const kind = appState.pendingTrackKind;
       const track: Traccia = {
@@ -258,11 +306,16 @@ export class AppController {
         kind,
         vertices: [{ x: sp.x, z: sp.z }],
         livelletta: defaultLivelletta(heightAt(dem, sp.x, sp.z)),
-        sezione: kind === 'terreno' ? { tipo: 'canale', punti: trapezioPunti('canale', SEZIONE_DEFAULT_LARGHEZZA, SEZIONE_DEFAULT_SCARPATA) } : null,
+        sezione: kind === 'terreno'
+          ? { tipo: 'canale', punti: trapezioPunti('canale', SEZIONE_DEFAULT_LARGHEZZA, SEZIONE_DEFAULT_SCARPATA), rivestimento: defaultRivestimento() }
+          : null,
+        vasca: kind === 'vasca'
+          ? { quotaFondo: heightAt(dem, sp.x, sp.z) - VASCA_DEFAULT_PROFONDITA, scarpataRapporto: VASCA_DEFAULT_SCARPATA, rivestimento: defaultRivestimento() }
+          : null,
         muro: kind === 'oggetto'
           ? { altezza: MURO_DEFAULT_ALTEZZA, spessore: MURO_DEFAULT_SPESSORE, fondazione: MURO_DEFAULT_FONDAZIONE, accumulo: defaultAccumulo() }
           : null,
-        categoria: kind === 'oggetto' ? 'contenimento' : null,
+        categoria: kind === 'oggetto' ? 'contenimento' : kind === 'vasca' ? 'idraulica' : null,
       };
       appState.tracks.push(track);
       appState.drawingTrackId = id;
@@ -397,7 +450,8 @@ export class AppController {
   setSezioneTipo(trackId: number, tipo: SezioneTipo): void {
     const track = appState.tracks.find((t) => t.id === trackId);
     if (!track || track.kind !== 'terreno') return;
-    track.sezione = { tipo, punti: trapezioPunti(tipo, SEZIONE_DEFAULT_LARGHEZZA, SEZIONE_DEFAULT_SCARPATA) };
+    const rivestimento = track.sezione?.rivestimento ?? defaultRivestimento();
+    track.sezione = { tipo, punti: trapezioPunti(tipo, SEZIONE_DEFAULT_LARGHEZZA, SEZIONE_DEFAULT_SCARPATA), rivestimento };
     this.rebuildTerrainProject();
   }
 
@@ -405,7 +459,23 @@ export class AppController {
     const track = appState.tracks.find((t) => t.id === trackId);
     if (!track || !track.sezione || punti.length < 2) return;
     track.sezione = { ...track.sezione, punti };
+    this.rebuildTracks(); // il guscio di rivestimento, se attivo, dipende dal profilo disegnato
     this.rebuildTerrainProject();
+  }
+
+  /** Genera un trapezio simmetrico (base minore + scarpata) al posto dei punti disegnati a mano. */
+  generateTrapezio(trackId: number, larghezza: number, scarpataRapporto: number): void {
+    const track = appState.tracks.find((t) => t.id === trackId);
+    if (!track || !track.sezione) return;
+    this.updateSezionePunti(trackId, trapezioPunti(track.sezione.tipo, larghezza, scarpataRapporto));
+  }
+
+  /** Rivestimento di un canale in scavo (§7/§8.2 SPEC): guscio senza offset, solo per stima e resa. */
+  setRivestimento(trackId: number, patch: Partial<Rivestimento>): void {
+    const track = appState.tracks.find((t) => t.id === trackId);
+    if (!track || !track.sezione) return;
+    track.sezione = { ...track.sezione, rivestimento: { ...track.sezione.rivestimento, ...patch } };
+    this.rebuildTracks();
   }
 
   setCategoria(trackId: number, categoria: OperaCategoria | null): void {
@@ -432,13 +502,30 @@ export class AppController {
     this.rebuildTracks();
   }
 
+  /* ---------- Vasca: scavo a pianta poligonale (§8.2 SPEC) ---------- */
+
+  updateVasca(trackId: number, patch: Partial<Vasca>): void {
+    const track = appState.tracks.find((t) => t.id === trackId);
+    if (!track || !track.vasca) return;
+    track.vasca = { ...track.vasca, ...patch };
+    this.rebuildTerrainProject();
+  }
+
+  /** Rivestimento di una vasca (§8.2 SPEC): stesso guscio senza offset del canale. */
+  setVascaRivestimento(trackId: number, patch: Partial<Rivestimento>): void {
+    const track = appState.tracks.find((t) => t.id === trackId);
+    if (!track || !track.vasca) return;
+    track.vasca = { ...track.vasca, rivestimento: { ...track.vasca.rivestimento, ...patch } };
+    this.rebuildTracks();
+  }
+
   /* ---------- Libreria opere: preset di sezione riusabili (§8 SPEC) ---------- */
 
   applyPreset(trackId: number, presetId: number): void {
     const track = appState.tracks.find((t) => t.id === trackId);
     const preset = appState.presets.find((p) => p.id === presetId);
     if (!track || track.kind !== 'terreno' || !preset) return;
-    track.sezione = { tipo: preset.tipo, punti: preset.punti.map((p) => ({ ...p })) };
+    track.sezione = { tipo: preset.tipo, punti: preset.punti.map((p) => ({ ...p })), rivestimento: defaultRivestimento() };
     track.categoria = preset.categoria;
     this.rebuildTerrainProject();
   }
@@ -485,6 +572,7 @@ export class AppController {
     appState.tracks = [];
     appState.selectedTrackId = null;
     appState.drawingTrackId = null;
+    this.removeOrtofoto();
     appState.dem = dem;
     this.projectDem = null;
     try {
@@ -519,6 +607,68 @@ export class AppController {
     ];
     if (dem.filled) rows.push({ label: 'Celle riempite', value: dem.filled.toLocaleString('it-IT') });
     appState.demInfo = rows;
+  }
+
+  /* ---------- Ortofoto georeferenziata (drappeggiata sul terreno) ---------- */
+
+  async openOrtofoto(file: File): Promise<void> {
+    if (!appState.dem) {
+      this.toast('Apri prima un DTM.');
+      return;
+    }
+    await this.showLoading('Lettura ortofoto…');
+    try {
+      const photo = await loadOrtofoto(file);
+      if (appState.dem.epsg !== null && photo.epsg !== null && photo.epsg !== appState.dem.epsg) {
+        this.toast(`Attenzione: l'ortofoto è in EPSG:${photo.epsg}, il DTM in EPSG:${appState.dem.epsg}. Potrebbero non sovrapporsi correttamente.`, 6000);
+      }
+      const bounds = ortofotoLocalBounds(appState.dem, photo);
+      this.disposeOrtofotoTexture();
+      const tex = new THREE.DataTexture(photo.data, photo.width, photo.height, THREE.RGBAFormat);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      tex.minFilter = THREE.LinearFilter;
+      tex.magFilter = THREE.LinearFilter;
+      tex.needsUpdate = true;
+      this.ctx.orthoTexture = tex;
+      this.ctx.uniforms.uOrthoTex.value = tex;
+      this.ctx.uniforms.uOrthoOrigin.value.set(bounds.x0, bounds.z0);
+      this.ctx.uniforms.uOrthoSize.value.set(bounds.w, bounds.h);
+      appState.showOrtofoto = true;
+      appState.ortofotoOpacity = 1;
+      this.ctx.uniforms.uOrthoOpacity.value = 1;
+      this.ctx.uniforms.uOrthoActive.value = 1;
+      appState.ortofoto = { name: photo.name, epsg: photo.epsg };
+      this.hideLoading();
+      this.toast(`Ortofoto caricata: ${photo.width} × ${photo.height} px`);
+    } catch (err) {
+      this.hideLoading();
+      console.error(err);
+      this.toast(err instanceof Error ? err.message : 'Ortofoto non leggibile.', 6000);
+    }
+  }
+
+  private disposeOrtofotoTexture(): void {
+    if (this.ctx.orthoTexture) {
+      this.ctx.orthoTexture.dispose();
+      this.ctx.orthoTexture = null;
+    }
+  }
+
+  removeOrtofoto(): void {
+    this.disposeOrtofotoTexture();
+    this.ctx.uniforms.uOrthoTex.value = null;
+    this.ctx.uniforms.uOrthoActive.value = 0;
+    appState.ortofoto = null;
+  }
+
+  setOrtofotoVisible(v: boolean): void {
+    appState.showOrtofoto = v;
+    this.ctx.uniforms.uOrthoActive.value = v && appState.ortofoto ? 1 : 0;
+  }
+
+  setOrtofotoOpacity(v: number): void {
+    appState.ortofotoOpacity = v;
+    this.ctx.uniforms.uOrthoOpacity.value = v;
   }
 
   /* ---------- Import GeoTIFF + ritaglio ---------- */
@@ -660,7 +810,7 @@ export class AppController {
       if (this.draggingVertex && dragDem) {
         const p = pick(this.ctx, dragDem, appState.exag, e.clientX, e.clientY);
         if (p) {
-          const sp = this.snapXZ(p.x, p.z, e.altKey);
+          const sp = this.snapXZ(p.x, p.z, e.altKey, e.clientX, e.clientY, this.draggingVertex.trackId);
           const track = appState.tracks.find((t) => t.id === this.draggingVertex!.trackId);
           if (track) {
             track.vertices[this.draggingVertex!.index] = { x: sp.x, z: sp.z };
@@ -722,7 +872,7 @@ export class AppController {
       this.updateStatus(p);
       if (!p) return;
       if (appState.tool === 'point') this.points.add(clickDem, appState.exag, p.x, p.z);
-      else if (appState.tool === 'track') this.handleTrackClick(p, e.altKey);
+      else if (appState.tool === 'track') this.handleTrackClick(p, e.altKey, e.clientX, e.clientY);
       else if (appState.tool === 'inspect') this.inspectClick(p);
     });
   }

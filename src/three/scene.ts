@@ -26,6 +26,11 @@ export interface TerrainUniforms {
   uGrid: { value: number };
   uGridStep: { value: number };
   uGridColor: { value: THREE.Color };
+  uOrthoActive: { value: number };
+  uOrthoOrigin: { value: THREE.Vector2 };
+  uOrthoSize: { value: THREE.Vector2 };
+  uOrthoOpacity: { value: number };
+  uOrthoTex: { value: THREE.Texture | null };
 }
 
 /**
@@ -41,6 +46,8 @@ export class ThreeContext {
   uniforms: TerrainUniforms;
   terrainGroup: THREE.Group | null = null;
   markerGroup = new THREE.Group();
+  /** Texture dell'ortofoto attualmente caricata (fuori da appState: mai proxare un oggetto three.js, si veda appState.svelte.ts). */
+  orthoTexture: THREE.Texture | null = null;
 
   constructor(private container: HTMLElement) {
     this.renderer = new THREE.WebGLRenderer({ antialias: true, logarithmicDepthBuffer: false });
@@ -65,6 +72,8 @@ export class ThreeContext {
       uC2: { value: new THREE.Color(SLOPE_COLORS[2]) }, uC3: { value: new THREE.Color(SLOPE_COLORS[3]) },
       uC4: { value: new THREE.Color(SLOPE_COLORS[4]) },
       uGrid: { value: 0 }, uGridStep: { value: 0.5 }, uGridColor: { value: new THREE.Color() },
+      uOrthoActive: { value: 0 }, uOrthoOrigin: { value: new THREE.Vector2() }, uOrthoSize: { value: new THREE.Vector2(1, 1) },
+      uOrthoOpacity: { value: 1 }, uOrthoTex: { value: null },
     };
 
     this.terrainMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 1, metalness: 0, side: THREE.DoubleSide });
@@ -78,7 +87,10 @@ export class ThreeContext {
 varying vec3 vWPos; varying vec3 vWNorm;
 uniform float uZBase, uExag, uContour, uStep, uSlope, uZmin, uZmax, uGrid, uGridStep;
 uniform vec3 uLo, uHi, uLine, uC0, uC1, uC2, uC3, uC4, uGridColor;
-uniform vec4 uB;`)
+uniform vec4 uB;
+uniform float uOrthoActive, uOrthoOpacity;
+uniform vec2 uOrthoOrigin, uOrthoSize;
+uniform sampler2D uOrthoTex;`)
         .replace('#include <color_fragment>', `#include <color_fragment>
 {
   float zr = vWPos.y / uExag + uZBase;
@@ -90,6 +102,13 @@ uniform vec4 uB;`)
   } else {
     float t = clamp((zr - uZmin) / max(uZmax - uZmin, 1.0), 0.0, 1.0);
     base = mix(uLo, uHi, smoothstep(0.0, 1.0, t));
+  }
+  if (uOrthoActive > 0.5) {
+    vec2 ouv = (vWPos.xz - uOrthoOrigin) / uOrthoSize;
+    if (ouv.x >= 0.0 && ouv.x <= 1.0 && ouv.y >= 0.0 && ouv.y <= 1.0) {
+      vec3 photo = texture2D(uOrthoTex, vec2(ouv.x, ouv.y)).rgb;
+      base = mix(base, photo, uOrthoOpacity);
+    }
   }
   if (uContour > 0.5) {
     float f = zr / uStep;

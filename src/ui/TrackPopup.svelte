@@ -1,6 +1,6 @@
 <script lang="ts">
   import { appState } from '../core/appState.svelte';
-  import { OPERA_CATEGORY_LABELS } from '../core/config';
+  import { OPERA_CATEGORY_LABELS, SEZIONE_DEFAULT_LARGHEZZA, SEZIONE_DEFAULT_SCARPATA } from '../core/config';
   import { fmt } from '../core/format';
   import { heightAt } from '../dem/dem';
   import { formatChainage, progressives, trackLength } from '../core/polyline';
@@ -92,6 +92,16 @@
 
   function onTipoChange(trackId: number, tipo: SezioneTipo): void {
     controller.setSezioneTipo(trackId, tipo);
+    const t = appState.tracks.find((x) => x.id === trackId);
+    if (t) syncSezioneDraft(t);
+  }
+
+  /** Genera un trapezio simmetrico da base minore + scarpata, al posto dei punti disegnati a mano. */
+  let trapezioLarghezza = $state(SEZIONE_DEFAULT_LARGHEZZA);
+  let trapezioScarpata = $state(SEZIONE_DEFAULT_SCARPATA);
+
+  function onGeneraTrapezio(trackId: number): void {
+    controller.generateTrapezio(trackId, Math.max(0, trapezioLarghezza), Math.max(0.05, trapezioScarpata));
     const t = appState.tracks.find((x) => x.id === trackId);
     if (t) syncSezioneDraft(t);
   }
@@ -262,6 +272,25 @@
             {/each}
           </select>
         </div>
+        <div class="row">
+          <span>
+            Genera trapezio
+            <InfoButton text="Sostituisce i punti disegnati con un trapezio simmetrico: base minore (piattaforma piatta) e scarpata come rapporto orizzontale:verticale (es. 1.5 = 1.5 m in orizzontale ogni 1 m in verticale). Puoi poi rifinire i punti a mano nel grafico sotto." />
+          </span>
+        </div>
+        <div class="row">
+          <span>Base minore</span>
+          <span class="field"><input type="number" class="num" min="0" step="0.5" aria-label="Base minore del trapezio"
+            bind:value={trapezioLarghezza}> m</span>
+        </div>
+        <div class="row">
+          <span>Scarpata (H:V)</span>
+          <span class="field"><input type="number" class="num" min="0.05" step="0.1" aria-label="Scarpata del trapezio, rapporto orizzontale:verticale"
+            bind:value={trapezioScarpata}></span>
+        </div>
+        <div class="actions">
+          <button class="btn" onclick={() => onGeneraTrapezio(track.id)}>Genera</button>
+        </div>
         <SectionEditor
           punti={sezioneDraft}
           snapD={appState.snapStep}
@@ -286,6 +315,94 @@
           >
           <button class="btn" onclick={() => onSavePreset(track.id, track.categoria)}>Salva come preset</button>
         </div>
+      </section>
+
+      {#if track.sezione.tipo === 'canale'}
+        <section>
+          <h2>
+            Rivestimento
+            <InfoButton text="Guscio sottile sulla superficie scavata (fondo e scarpate), reso senza offset verso l'esterno: serve a segnare che il canale è rivestito e a stimarne la superficie, non a un disegno costruttivo." />
+          </h2>
+          <label class="row" style="cursor:pointer">
+            <span>Canale rivestito</span>
+            <input type="checkbox" checked={track.sezione.rivestimento.attivo}
+              onchange={(e) => controller.setRivestimento(track.id, { attivo: e.currentTarget.checked })}>
+          </label>
+          {#if track.sezione.rivestimento.attivo}
+            <div class="row">
+              <span>Spessore</span>
+              <span class="field"><input type="number" class="num" min="0.01" step="0.01" aria-label="Spessore del rivestimento"
+                value={track.sezione.rivestimento.spessore}
+                onchange={(e) => controller.setRivestimento(track.id, { spessore: Math.max(0.01, +e.currentTarget.value || 0.01) })}> m</span>
+            </div>
+            {#if appState.rivestimentoStats[track.id] !== undefined}
+              <dl class="kv">
+                <dt>Superficie rivestita</dt><dd>{fmt(appState.rivestimentoStats[track.id], 0)} m²</dd>
+              </dl>
+            {/if}
+          {/if}
+        </section>
+      {/if}
+    {/if}
+
+    {#if track.kind === 'vasca' && track.vasca}
+      <section>
+        <h2>
+          Vasca
+          <InfoButton text="Scavo a pianta poligonale: dal contorno disegnato sopra, il terreno scende con la scarpata data fino alla quota di fondo, senza bisogno di una larghezza esplicita — come le scarpate di canale/rilevato, si ferma da sola dove incontra il fondo piatto." />
+        </h2>
+        <div class="row">
+          <span>Categoria</span>
+          <select aria-label="Categoria opera" value={track.categoria ?? 'idraulica'}
+            onchange={(e) => controller.setCategoria(track.id, e.currentTarget.value as OperaCategoria)}
+          >
+            {#each Object.entries(OPERA_CATEGORY_LABELS) as [key, label] (key)}
+              <option value={key}>{label}</option>
+            {/each}
+          </select>
+        </div>
+        <div class="row">
+          <span>Quota di fondo</span>
+          <span class="field"><input type="number" class="num" step="0.1" aria-label="Quota di fondo"
+            value={track.vasca.quotaFondo}
+            onchange={(e) => controller.updateVasca(track.id, { quotaFondo: +e.currentTarget.value || 0 })}> m</span>
+        </div>
+        <div class="row">
+          <span>Scarpata (H:V)</span>
+          <span class="field"><input type="number" class="num" min="0.05" step="0.1" aria-label="Scarpata della vasca, rapporto orizzontale:verticale"
+            value={track.vasca.scarpataRapporto}
+            onchange={(e) => controller.updateVasca(track.id, { scarpataRapporto: Math.max(0.05, +e.currentTarget.value || 0.05) })}></span>
+        </div>
+        {#if trackVolumes}
+          <dl class="kv">
+            <dt>Sterro</dt><dd>{fmt(trackVolumes.scavo, 0)} m³</dd>
+          </dl>
+        {/if}
+      </section>
+
+      <section>
+        <h2>
+          Rivestimento
+          <InfoButton text="Guscio sottile sulla superficie scavata (fondo e scarpate), reso senza offset verso l'esterno: serve a segnare che la vasca è rivestita e a stimarne la superficie, non a un disegno costruttivo." />
+        </h2>
+        <label class="row" style="cursor:pointer">
+          <span>Vasca rivestita</span>
+          <input type="checkbox" checked={track.vasca.rivestimento.attivo}
+            onchange={(e) => controller.setVascaRivestimento(track.id, { attivo: e.currentTarget.checked })}>
+        </label>
+        {#if track.vasca.rivestimento.attivo}
+          <div class="row">
+            <span>Spessore</span>
+            <span class="field"><input type="number" class="num" min="0.01" step="0.01" aria-label="Spessore del rivestimento"
+              value={track.vasca.rivestimento.spessore}
+              onchange={(e) => controller.setVascaRivestimento(track.id, { spessore: Math.max(0.01, +e.currentTarget.value || 0.01) })}> m</span>
+          </div>
+          {#if appState.rivestimentoStats[track.id] !== undefined}
+            <dl class="kv">
+              <dt>Superficie rivestita</dt><dd>{fmt(appState.rivestimentoStats[track.id], 0)} m²</dd>
+            </dl>
+          {/if}
+        {/if}
       </section>
     {/if}
 
