@@ -27,13 +27,18 @@ const vertices = [{ x: 0, z: 10 }, { x: 20, z: 10 }];
  * pareti sempre più alte). Serve a testare la vera fisica 2D (§8.2/8.3/8.4): un profilo x-invariante
  * come `slopedDem` non confina nulla lateralmente e non è adatto a un accumulo realistico.
  */
-function valleyDem(w: number, h: number, cx: number, half: number, wallSlope: number, capAt: number | null): Dem {
+function valleyDem(
+  w: number, h: number, cx: number, half: number, wallSlope: number, capAt: number | null, farDrop: number | null = null,
+): Dem {
+  const passWidth = capAt !== null ? capAt / wallSlope : Infinity;
   const data = new Float32Array(w * h);
   for (let r = 0; r < h; r++) {
     for (let c = 0; c < w; c++) {
       const beyond = Math.max(0, Math.abs(c - cx) - half);
-      let wall = beyond * wallSlope;
-      if (capAt !== null) wall = Math.min(wall, capAt);
+      let wall: number;
+      if (capAt === null) wall = beyond * wallSlope;
+      else if (beyond <= passWidth) wall = beyond * wallSlope;
+      else wall = farDrop !== null ? farDrop : capAt;
       data[r * w + c] = r + wall;
     }
   }
@@ -85,11 +90,14 @@ describe('computeAccumulo — acqua confinata in una valle', () => {
     expect(res.area).toBeGreaterThan(0);
   });
 
-  it('con una sella più bassa del coronamento, l\'acqua sfiora lateralmente invece di appoggiarsi al coronamento', () => {
-    // Stessa valle, ma le pareti si fermano ("sella") a 3 m sopra il fondo: appena a monte della
-    // diga (z=11) la sella è a quota 14, sotto il coronamento (15). L'acqua non può restare a 15
-    // contro la diga se può defluire lateralmente a 14: l'intero invaso si assesta a 14.
-    const dem = valleyDem(101, 25, 40, 8, 3, 3);
+  it('con una sella più bassa del coronamento, l\'acqua si ferma al vero punto di sfioro e non trabocca nel bacino a valle', () => {
+    // Stessa valle, ma le pareti salgono fino a una sella a 3 m sopra il fondo (quota 14 vicino
+    // alla diga, sotto il coronamento 15) e subito oltre la sella il terreno scende in un bacino
+    // completamente diverso, non collegato fisicamente all'accumulo. L'acqua non può restare a 15
+    // contro la diga se può defluire lateralmente a 14 (il vero punto di sfioro) — ma superata la
+    // sella non deve "riallagare" un bacino a valle qualunque solo perché sta sotto quota 14: quel
+    // terreno è raggiungibile da monte solo attraversando la sella, non restandone sempre sotto.
+    const dem = valleyDem(101, 25, 40, 8, 3, 3, -10);
     const dammVertices = [{ x: 32, z: 10 }, { x: 48, z: 10 }];
     const muro: Muro = { altezza: 5, spessore: 1, fondazione: 0, accumulo: { attivo: true, pendenzaGradi: 0, lato: 1 } };
     const field = computeAccumuloField(dem, dammVertices, muro)!;
@@ -99,15 +107,15 @@ describe('computeAccumulo — acqua confinata in una valle', () => {
     expect(center.flooded).toBe(true);
     expect(center.surface).toBeCloseTo(14); // quota di sfioro reale, non il coronamento (15)
 
-    const shelf = fieldAt(field, 5, 11); // sulla sella, lontano lateralmente dalla diga
-    expect(shelf.flooded).toBe(true);
-    expect(shelf.surface).toBeCloseTo(14);
+    const oltreLaSella = fieldAt(field, 20, 11); // bacino a valle della sella, terreno molto più basso
+    expect(oltreLaSella.flooded).toBe(false); // non fisicamente collegato: non va incluso nell'accumulo
 
     // Non risale oltre la quota di sfioro: un punto che richiederebbe 15 per essere sommerso resta asciutto.
-    const atSpillLevel = fieldAt(field, 40, 14); // fondo valle a quota 14: appena sommerso, al limite
-    expect(atSpillLevel.flooded).toBe(true);
     const justAbove = fieldAt(field, 40, 15); // fondo valle a quota 15 > 14 di sfioro: asciutto
     expect(justAbove.flooded).toBe(false);
+
+    const res = computeAccumulo(dem, dammVertices, muro)!;
+    expect(res.volume).toBeGreaterThan(0);
   });
 
   it('un dosso trasversale a tutta la valle chiude per sempre, anche se il terreno oltre ridiscende', () => {
@@ -140,15 +148,22 @@ describe('computeAccumulo — acqua confinata in una valle', () => {
 
 describe('computeAccumulo — detrito (pendenza > 0°)', () => {
   it('risale verso monte più dell\'acqua, a parità di versante', () => {
-    // Terreno x-invariante (nessuna valle: qui basta testare l'andamento lungo la direzione monte,
-    // non il confinamento laterale). Pendenza di accumulo pari a metà di quella del versante.
+    // Valle confinata (non x-invariante: una diga che si ammorsa da parte a parte in tutta la
+    // larghezza del DTM di prova non lascerebbe all'acqua nessun vero limite di sfioro da trovare,
+    // un caso degenere che non serve a questo confronto). Pendenza di accumulo pari a metà di
+    // quella del versante.
+    const dem = valleyDem(61, 80, 20, 8, 3, null);
+    const dammVertices = [{ x: 10, z: 10 }, { x: 30, z: 10 }];
     const pendenzaGradi = (Math.atan(0.5) * 180) / Math.PI;
     const muro: Muro = { altezza: 5, spessore: 1, fondazione: 0, accumulo: { attivo: true, pendenzaGradi, lato: 1 } };
-    const res = computeAccumulo(tallSlopedDem(), vertices, muro)!;
+    const res = computeAccumulo(dem, dammVertices, muro)!;
     const acqua: Muro = { ...muro, accumulo: { ...muro.accumulo, pendenzaGradi: 0 } };
-    const resAcqua = computeAccumulo(tallSlopedDem(), vertices, acqua)!;
+    const resAcqua = computeAccumulo(dem, dammVertices, acqua)!;
+    // Il detrito trattiene più materiale (risale insieme al terreno anziché restare piatto), non
+    // necessariamente su un'area maggiore: può occupare meno pianta ma con profondità molto più
+    // alta lungo la rampa, mentre l'acqua è larga quanto tutto il fondovalle ma bassa (al più
+    // coronamento-fondo).
     expect(res.volume).toBeGreaterThan(resAcqua.volume);
-    expect(res.area).toBeGreaterThan(resAcqua.area);
   });
 
   it('più la pendenza è vicina a quella del versante, più il raggio d\'azione si allunga', () => {

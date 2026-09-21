@@ -66,6 +66,10 @@ button,input,select{font:inherit;color:inherit}
 .row input[type=range]{width:130px;accent-color:var(--accent)}
 .row select,.num{background:var(--panel-solid);border:1px solid var(--line);border-radius:6px;padding:3px 6px}
 .num{width:58px;text-align:right}
+/* Raggruppa input e unità di misura in un solo elemento flessibile: altrimenti, dentro una .row
+   con justify-content:space-between, l'unità (testo libero dopo l'input) diventa un terzo elemento
+   flessibile a sé e l'input smette di essere allineato a destra in modo coerente riga per riga. */
+.field{display:inline-flex;align-items:center;gap:4px;flex-shrink:0}
 input[type=checkbox]{accent-color:var(--accent);width:16px;height:16px}
 .classes{display:grid;grid-template-columns:14px 1fr auto;gap:6px 8px;align-items:center;font-size:13px;margin-top:6px}
 .swatch{width:14px;height:14px;border-radius:3px;border:1px solid rgba(0,0,0,.15)}

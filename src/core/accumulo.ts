@@ -196,6 +196,39 @@ function computeRim(cols: number, rows: number, terrain: Float32Array, wall: Uin
 }
 
 /**
+ * Allaga per davvero alla quota `level`: componente connessa (8-connessione) raggiungibile dai semi
+ * restando sempre sotto `level`, senza mai attraversarla. A differenza di `computeRim` (che serve
+ * solo a trovare la quota di sfioro), qui la soglia è fissa e la propagazione si ferma per sempre
+ * appena un nodo tocca o supera `level` — se `level` è davvero la quota di sfioro, questo raggio non
+ * può mai raggiungere il bordo dell'area analizzata (altrimenti la quota di sfioro sarebbe più
+ * bassa), quindi resta sempre a monte, senza "scavalcare" la sella e riempire il versante a valle.
+ */
+function floodBelowLevel(
+  cols: number, rows: number, terrain: Float32Array, wall: Uint8Array, seeds: number[], level: number,
+): Uint8Array {
+  const flooded = new Uint8Array(cols * rows);
+  const stack: number[] = [];
+  for (const li of seeds) {
+    if (wall[li] || flooded[li] || terrain[li] >= level) continue;
+    flooded[li] = 1;
+    stack.push(li);
+  }
+  while (stack.length) {
+    const li = stack.pop()!;
+    const c = li % cols, r = (li / cols) | 0;
+    for (const [dc, dr] of NEI8) {
+      const nc = c + dc, nr = r + dr;
+      if (nc < 0 || nc >= cols || nr < 0 || nr >= rows) continue;
+      const nli = nr * cols + nc;
+      if (wall[nli] || flooded[nli] || terrain[nli] >= level) continue;
+      flooded[nli] = 1;
+      stack.push(nli);
+    }
+  }
+  return flooded;
+}
+
+/**
  * Dijkstra geodetico: per ogni nodo, la distanza dal seme più vicino lungo il percorso più breve
  * (8-connesso), fermandosi per sempre al primo nodo in cui il terreno raggiunge il soffitto
  * `crest + tanP·distanza` (si veda `computeAccumuloField` per il detrito, che risale con pendenza
@@ -346,11 +379,15 @@ export function computeAccumuloField(dem: Dem, vertices: Vertex[], muro: Muro): 
       if (left < zSpill) zSpill = left;
       if (right < zSpill) zSpill = right;
     }
-    flooded = new Uint8Array(cols * rows);
-    surface = new Float32Array(cols * rows);
-    for (let i = 0; i < rim.length; i++) {
-      if (rim[i] <= zSpill && !wall[i]) { flooded[i] = 1; surface[i] = zSpill; }
-    }
+    // `rim` serve solo a trovare zSpill: usarlo anche per decidere le celle allagate (rim <= zSpill)
+    // lascerebbe l'acqua "attraversare" la sella e riempire pure il versante a valle, perché il
+    // percorso più economico verso qualunque punto oltre la sella resta comunque sotto zSpill una
+    // volta superata (è così che è stata trovata la sella stessa). L'invaso vero è solo la
+    // componente connessa raggiungibile dai semi restando sempre SOTTO zSpill: per costruzione non
+    // può mai raggiungere il bordo dell'area analizzata (se potesse, zSpill sarebbe più basso), quindi
+    // si ferma da sola esattamente alla sella, senza proseguire a valle.
+    flooded = floodBelowLevel(cols, rows, terrain, wall, seeds, zSpill);
+    surface = new Float32Array(cols * rows).fill(zSpill);
   } else {
     const res = computeSlopeFlood(cols, rows, terrain, wall, seeds, crest, tanP, dem.cell);
     flooded = pruneThinTendrils(cols, rows, res.flooded, new Set(seeds));

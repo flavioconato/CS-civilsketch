@@ -18,19 +18,12 @@
   const muro = $derived(track ? (appState.muroStats[track.id] ?? null) : null);
   const accumulo = $derived(track ? (appState.accumuloStats[track.id] ?? null) : null);
   const isDrawing = $derived(track !== null && appState.drawingTrackId === track.id);
+  // Solo un'indicazione (si veda `accumuloMaxPendenzaGradi`): stimata da un unico raggio di prova,
+  // non vincolante. Chi disegna sa meglio del software se il proprio versante regge una pendenza
+  // più alta, quindi qui non si forza mai il valore: si segnala soltanto quando lo si supera.
   const maxPendenzaAccumulo = $derived(
     track?.muro && appState.dem ? accumuloMaxPendenzaGradi(appState.dem, track.vertices, track.muro) : null,
   );
-
-  // Rete di sicurezza indipendente dall'evento di input: qualunque sia la causa (digitazione,
-  // cambio di altezza o di terreno che abbassa il limite consigliato), la pendenza non resta mai
-  // sopra il massimo per questo versante più di un istante.
-  $effect(() => {
-    if (track?.muro?.accumulo.attivo && maxPendenzaAccumulo !== null
-      && track.muro.accumulo.pendenzaGradi > maxPendenzaAccumulo) {
-      controller.setAccumulo(track.id, { pendenzaGradi: maxPendenzaAccumulo });
-    }
-  });
 
   function onToggleAccumulo(trackId: number, checked: boolean): void {
     if (checked) {
@@ -131,6 +124,10 @@
     </div>
 
     <section>
+      <h2>
+        Traccia
+        <InfoButton text="Lunghezza planimetrica della polilinea (in pianta, non lungo il terreno). Per aggiungere o spostare vertici: strumento Traccia, poi clicca su un vertice esistente per trascinarlo." />
+      </h2>
       <dl class="kv">
         <dt>Vertici</dt><dd>{track.vertices.length}</dd>
         <dt>Lunghezza</dt><dd>{fmt(trackLength(track.vertices), 1)} m</dd>
@@ -185,24 +182,24 @@
         {#if track.livelletta.mode === 'pendenza'}
           <div class="row">
             <span>Quota iniziale</span>
-            <input type="number" class="num" step="0.1" aria-label="Quota iniziale" value={track.livelletta.quotaIniziale}
-              onchange={(e) => controller.updateLivelletta(track.id, { quotaIniziale: +e.currentTarget.value })}> m
+            <span class="field"><input type="number" class="num" step="0.1" aria-label="Quota iniziale" value={track.livelletta.quotaIniziale}
+              onchange={(e) => controller.updateLivelletta(track.id, { quotaIniziale: +e.currentTarget.value })}> m</span>
           </div>
           <div class="row">
             <span>Pendenza</span>
-            <input type="number" class="num" step="0.1" aria-label="Pendenza percentuale" value={track.livelletta.pendenza}
-              onchange={(e) => controller.updateLivelletta(track.id, { pendenza: +e.currentTarget.value })}> %
+            <span class="field"><input type="number" class="num" step="0.1" aria-label="Pendenza percentuale" value={track.livelletta.pendenza}
+              onchange={(e) => controller.updateLivelletta(track.id, { pendenza: +e.currentTarget.value })}> %</span>
           </div>
         {:else if track.livelletta.mode === 'quote'}
           <div class="row">
             <span>Quota iniziale</span>
-            <input type="number" class="num" step="0.1" aria-label="Quota iniziale" value={track.livelletta.quotaIniziale}
-              onchange={(e) => controller.updateLivelletta(track.id, { quotaIniziale: +e.currentTarget.value })}> m
+            <span class="field"><input type="number" class="num" step="0.1" aria-label="Quota iniziale" value={track.livelletta.quotaIniziale}
+              onchange={(e) => controller.updateLivelletta(track.id, { quotaIniziale: +e.currentTarget.value })}> m</span>
           </div>
           <div class="row">
             <span>Quota finale</span>
-            <input type="number" class="num" step="0.1" aria-label="Quota finale" value={track.livelletta.quotaFinale}
-              onchange={(e) => controller.updateLivelletta(track.id, { quotaFinale: +e.currentTarget.value })}> m
+            <span class="field"><input type="number" class="num" step="0.1" aria-label="Quota finale" value={track.livelletta.quotaFinale}
+              onchange={(e) => controller.updateLivelletta(track.id, { quotaFinale: +e.currentTarget.value })}> m</span>
           </div>
         {:else if track.livelletta.mode === 'vertici'}
           {#if track.livelletta.vertici.length}
@@ -296,7 +293,7 @@
       <section>
         <h2>
           Muro / barriera / briglia
-          <InfoButton text="Oggetto separato, non modifica il terreno. La sommità resta a quota costante lungo la traccia: l'altezza qui sotto si sviluppa per intero solo nel punto più basso del terreno, minore dove il terreno sale." />
+          <InfoButton text="Oggetto separato, non modifica il terreno. La sommità resta a quota costante lungo la traccia: l'altezza massima si sviluppa per intero solo nel punto più basso del terreno, minore dove il terreno sale. La fondazione è l'infissione sotto il piano campagna." />
         </h2>
         <div class="row">
           <span>Categoria</span>
@@ -309,19 +306,19 @@
           </select>
         </div>
         <div class="row">
-          <span>Altezza massima (punto più basso)</span>
-          <input type="number" class="num" min="0.1" step="0.1" aria-label="Altezza massima"
-            value={track.muro.altezza} onchange={(e) => controller.updateMuro(track.id, { altezza: Math.max(0.1, +e.currentTarget.value || 0.1) })}> m
+          <span>Altezza massima</span>
+          <span class="field"><input type="number" class="num" min="0.1" step="0.1" aria-label="Altezza massima"
+            value={track.muro.altezza} onchange={(e) => controller.updateMuro(track.id, { altezza: Math.max(0.1, +e.currentTarget.value || 0.1) })}> m</span>
         </div>
         <div class="row">
           <span>Spessore</span>
-          <input type="number" class="num" min="0.05" step="0.05" aria-label="Spessore"
-            value={track.muro.spessore} onchange={(e) => controller.updateMuro(track.id, { spessore: Math.max(0.05, +e.currentTarget.value || 0.05) })}> m
+          <span class="field"><input type="number" class="num" min="0.05" step="0.05" aria-label="Spessore"
+            value={track.muro.spessore} onchange={(e) => controller.updateMuro(track.id, { spessore: Math.max(0.05, +e.currentTarget.value || 0.05) })}> m</span>
         </div>
         <div class="row">
-          <span>Fondazione (infissione)</span>
-          <input type="number" class="num" min="0" step="0.1" aria-label="Fondazione"
-            value={track.muro.fondazione} onchange={(e) => controller.updateMuro(track.id, { fondazione: Math.max(0, +e.currentTarget.value || 0) })}> m
+          <span>Fondazione</span>
+          <span class="field"><input type="number" class="num" min="0" step="0.1" aria-label="Fondazione"
+            value={track.muro.fondazione} onchange={(e) => controller.updateMuro(track.id, { fondazione: Math.max(0, +e.currentTarget.value || 0) })}> m</span>
         </div>
         {#if muro}
           <dl class="kv">
@@ -343,18 +340,16 @@
           <div class="row">
             <span>
               Pendenza superficie
-              <InfoButton text="0° = acqua (pelo libero orizzontale, come un invaso). Maggiore di 0° = detrito, secondo il suo angolo di riposo. Oltre la pendenza massima indicata, la superficie non incontra più il versante entro una distanza ragionevole: il risultato smette di avere senso fisico." />
+              <InfoButton text="0° = acqua (pelo libero orizzontale, come un invaso). Maggiore di 0° = detrito, secondo il suo angolo di riposo. Il valore consigliato qui sotto è solo una stima da un singolo raggio di prova verso monte: sul terreno reale può starci comodamente sopra o sotto, valuta tu." />
             </span>
-            <input type="number" class="num" min="0" max={maxPendenzaAccumulo ?? 60} step="1" aria-label="Pendenza della superficie di accumulo in gradi"
+            <span class="field"><input type="number" class="num" min="0" step="1" aria-label="Pendenza della superficie di accumulo in gradi"
               value={track.muro.accumulo.pendenzaGradi}
-              onchange={(e) => {
-                const raw = Math.max(0, +e.currentTarget.value || 0);
-                const clamped = maxPendenzaAccumulo !== null ? Math.min(raw, maxPendenzaAccumulo) : raw;
-                controller.setAccumulo(track.id, { pendenzaGradi: clamped });
-              }}> °
+              onchange={(e) => controller.setAccumulo(track.id, { pendenzaGradi: Math.max(0, +e.currentTarget.value || 0) })}> °</span>
           </div>
           {#if maxPendenzaAccumulo !== null}
-            <p class="muted">Pendenza massima consigliata su questo versante: {maxPendenzaAccumulo}°.</p>
+            <p class="muted" class:warn={track.muro.accumulo.pendenzaGradi > maxPendenzaAccumulo}>
+              Stima di massima su questo versante: {maxPendenzaAccumulo}°{track.muro.accumulo.pendenzaGradi > maxPendenzaAccumulo ? ' — sei sopra: controlla che l\'accumulo abbia ancora senso' : ''}.
+            </p>
           {/if}
           <div class="row">
             <span>Lato monte rilevato dal terreno</span>
