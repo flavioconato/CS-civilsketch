@@ -179,7 +179,7 @@ export class AppController {
         t.livelletta.vertici = livellettaVerticesFromTerrain(appState.dem, t.vertices);
       }
     }
-    this.tracks.rebuild(appState.dem, dem, appState.exag, appState.tracks, appState.selectedTrackId);
+    this.tracks.rebuild(appState.dem, dem, appState.exag, appState.tracks, appState.selectedTrackId, this.draggingVertex === null);
     const stats: typeof appState.muroStats = {};
     for (const t of appState.tracks) {
       if (t.kind === 'oggetto' && t.muro && t.vertices.length >= 2) stats[t.id] = muroStats(dem, t.vertices, t.muro);

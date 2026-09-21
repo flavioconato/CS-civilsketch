@@ -5,6 +5,7 @@
   import { slopeAt } from '../dem/dem';
   import type { AppController } from '../app/controller';
   import type { SlopeBreaks } from '../core/types';
+  import InfoButton from './InfoButton.svelte';
 
   let { controller }: { controller: AppController } = $props();
 
@@ -80,8 +81,8 @@
       <input type="range" min="0.2" max="1" step="0.05" value={appState.opacity}
         oninput={(e) => controller.setOpacity(+e.currentTarget.value)}>
     </div>
-    <div class="row">
-      <span>Esagerazione verticale <b>{fmt(exagLive, 1)}×</b></span>
+    <div class="row-stack">
+      <span class="row-stack-label">Esagerazione verticale <b>{fmt(exagLive, 1)}×</b></span>
       <input type="range" min={EXAG_MIN} max={EXAG_MAX} step={EXAG_STEP} value={exagLive}
         oninput={(e) => { exagLive = +e.currentTarget.value; }}
         onchange={(e) => controller.setExag(+e.currentTarget.value)}>
@@ -92,7 +93,10 @@
   </section>
 
   <section>
-    <h2>Griglia e snap</h2>
+    <h2>
+      Griglia e snap
+      <InfoButton text="Tieni premuto Alt mentre clicchi o trascini per disattivare temporaneamente lo snap. Lo stesso passo qui sopra è usato anche nell'editor del profilo di scavo/riporto." />
+    </h2>
     <div class="row">
       <label><input type="checkbox" checked={appState.gridVisible} onchange={() => controller.toggleGrid()}> Griglia visibile</label>
     </div>
@@ -111,7 +115,6 @@
         value={appState.snapStepVert}
         onchange={(e) => controller.setSnapStepVert(Math.max(0.01, +e.currentTarget.value || 0.01))}>
     </div>
-    <p class="muted">Tieni premuto Alt mentre clicchi o trascini per disattivare temporaneamente lo snap. Lo stesso passo qui sopra è usato anche nell'editor del profilo di scavo/riporto.</p>
   </section>
 
   <section>
@@ -153,7 +156,9 @@
   </section>
 
   <section>
-    <h2>Comandi</h2>
-    <p class="muted">Trascina per ruotare, tasto destro o due dita per spostare, rotella per zoom. WASD per muoverti, Shift per andare più veloce. Con lo strumento Traccia: Invio termina, Esc annulla, tasto destro (senza trascinare) torna indietro di un punto.</p>
+    <h2>
+      Comandi
+      <InfoButton text="Trascina per ruotare, tasto destro o due dita per spostare, rotella per zoom. WASD per muoverti, Shift per andare più veloce. Con lo strumento Traccia: Invio termina, Esc annulla, tasto destro (senza trascinare) torna indietro di un punto." />
+    </h2>
   </section>
 </aside>

@@ -4,10 +4,11 @@
   import { fmt } from '../core/format';
   import { heightAt } from '../dem/dem';
   import { formatChainage, progressives, trackLength } from '../core/polyline';
-  import { detectMonteSide } from '../core/accumulo';
+  import { accumuloMaxPendenzaGradi, detectMonteSide } from '../core/accumulo';
   import type { AppController } from '../app/controller';
   import type { LivellettaMode, OperaCategoria, SezionePunto, SezioneTipo } from '../core/types';
   import SectionEditor from './SectionEditor.svelte';
+  import InfoButton from './InfoButton.svelte';
 
   let { controller }: { controller: AppController } = $props();
 
@@ -17,6 +18,19 @@
   const muro = $derived(track ? (appState.muroStats[track.id] ?? null) : null);
   const accumulo = $derived(track ? (appState.accumuloStats[track.id] ?? null) : null);
   const isDrawing = $derived(track !== null && appState.drawingTrackId === track.id);
+  const maxPendenzaAccumulo = $derived(
+    track?.muro && appState.dem ? accumuloMaxPendenzaGradi(appState.dem, track.vertices, track.muro) : null,
+  );
+
+  // Rete di sicurezza indipendente dall'evento di input: qualunque sia la causa (digitazione,
+  // cambio di altezza o di terreno che abbassa il limite consigliato), la pendenza non resta mai
+  // sopra il massimo per questo versante più di un istante.
+  $effect(() => {
+    if (track?.muro?.accumulo.attivo && maxPendenzaAccumulo !== null
+      && track.muro.accumulo.pendenzaGradi > maxPendenzaAccumulo) {
+      controller.setAccumulo(track.id, { pendenzaGradi: maxPendenzaAccumulo });
+    }
+  });
 
   function onToggleAccumulo(trackId: number, checked: boolean): void {
     if (checked) {
@@ -152,7 +166,10 @@
 
     {#if track.kind === 'livelletta' || track.kind === 'terreno'}
       <section>
-        <h2>Livelletta</h2>
+        <h2>
+          Livelletta
+          <InfoButton text="Quota+pendenza o quota iniziale+finale danno un profilo lineare. Vertici di livelletta permette un profilo spezzato. Quote del terreno prende la quota naturale in ogni vertice della traccia e si aggiorna da sola se sposti o aggiungi vertici." />
+        </h2>
         <div class="row">
           <select
             aria-label="Modalità livelletta" value={track.livelletta.mode}
@@ -206,8 +223,6 @@
             <p class="muted">Nessun vertice: aggiungine uno per definire il profilo spezzato.</p>
           {/if}
           <button class="btn" onclick={() => controller.addLivellettaVertex(track.id)}>Aggiungi vertice</button>
-        {:else}
-          <p class="muted">Quota di progetto presa dal terreno naturale in ogni vertice della traccia: si aggiorna da sola se sposti o aggiungi vertici.</p>
         {/if}
       </section>
     {/if}
@@ -215,25 +230,6 @@
     {#if track.kind === 'terreno' && track.sezione}
       <section>
         <h2>Modifica terreno</h2>
-        <div class="row">
-          <select aria-label="Applica preset" value=""
-            onchange={(e) => { onApplyPreset(track.id, e.currentTarget.value); e.currentTarget.value = ''; }}
-          >
-            <option value="">Applica preset…</option>
-            {#each appState.presets as preset (preset.id)}
-              <option value={preset.id}>{preset.nome}</option>
-            {/each}
-          </select>
-        </div>
-        <div class="row">
-          <span>Tipo</span>
-          <select aria-label="Tipo di modifica" value={track.sezione.tipo}
-            onchange={(e) => onTipoChange(track.id, e.currentTarget.value as SezioneTipo)}
-          >
-            <option value="canale">Canale (scavo)</option>
-            <option value="rilevato">Rilevato (riporto)</option>
-          </select>
-        </div>
         <div class="row">
           <span>Categoria</span>
           <select aria-label="Categoria opera" value={track.categoria ?? ''}
@@ -245,11 +241,30 @@
             {/each}
           </select>
         </div>
-        <p class="muted">
-          {track.sezione.tipo === 'canale'
-            ? 'La livelletta della traccia è la quota di fondo canale: qui sotto, d=0 è l\'asse e quota=0 è quella quota.'
-            : 'La livelletta della traccia è la quota della piattaforma: qui sotto, d=0 è l\'asse e quota=0 è quella quota.'}
-        </p>
+        <div class="row">
+          <span>
+            Tipo
+            <InfoButton text={track.sezione.tipo === 'canale'
+              ? 'La livelletta della traccia è la quota di fondo canale: nel profilo qui sotto, d=0 è l\'asse e quota=0 è quella quota.'
+              : 'La livelletta della traccia è la quota della piattaforma: nel profilo qui sotto, d=0 è l\'asse e quota=0 è quella quota.'} />
+          </span>
+          <select aria-label="Tipo di modifica" value={track.sezione.tipo}
+            onchange={(e) => onTipoChange(track.id, e.currentTarget.value as SezioneTipo)}
+          >
+            <option value="canale">Canale (scavo)</option>
+            <option value="rilevato">Rilevato (riporto)</option>
+          </select>
+        </div>
+        <div class="row">
+          <select aria-label="Applica preset" value=""
+            onchange={(e) => { onApplyPreset(track.id, e.currentTarget.value); e.currentTarget.value = ''; }}
+          >
+            <option value="">Applica preset…</option>
+            {#each appState.presets as preset (preset.id)}
+              <option value={preset.id}>{preset.nome}</option>
+            {/each}
+          </select>
+        </div>
         <SectionEditor
           punti={sezioneDraft}
           snapD={appState.snapStep}
@@ -279,8 +294,10 @@
 
     {#if track.kind === 'oggetto' && track.muro}
       <section>
-        <h2>Muro / barriera / briglia</h2>
-        <p class="muted">Oggetto separato, non modifica il terreno. La sommità resta a quota costante lungo la traccia: l'altezza qui sotto si sviluppa per intero solo nel punto più basso del terreno, minore dove il terreno sale.</p>
+        <h2>
+          Muro / barriera / briglia
+          <InfoButton text="Oggetto separato, non modifica il terreno. La sommità resta a quota costante lungo la traccia: l'altezza qui sotto si sviluppa per intero solo nel punto più basso del terreno, minore dove il terreno sale." />
+        </h2>
         <div class="row">
           <span>Categoria</span>
           <select aria-label="Categoria opera" value={track.categoria ?? 'contenimento'}
@@ -324,12 +341,21 @@
         </label>
         {#if track.muro.accumulo.attivo}
           <div class="row">
-            <span>Pendenza superficie</span>
-            <input type="number" class="num" min="0" max="60" step="1" aria-label="Pendenza della superficie di accumulo in gradi"
+            <span>
+              Pendenza superficie
+              <InfoButton text="0° = acqua (pelo libero orizzontale, come un invaso). Maggiore di 0° = detrito, secondo il suo angolo di riposo. Oltre la pendenza massima indicata, la superficie non incontra più il versante entro una distanza ragionevole: il risultato smette di avere senso fisico." />
+            </span>
+            <input type="number" class="num" min="0" max={maxPendenzaAccumulo ?? 60} step="1" aria-label="Pendenza della superficie di accumulo in gradi"
               value={track.muro.accumulo.pendenzaGradi}
-              onchange={(e) => controller.setAccumulo(track.id, { pendenzaGradi: Math.max(0, +e.currentTarget.value || 0) })}> °
+              onchange={(e) => {
+                const raw = Math.max(0, +e.currentTarget.value || 0);
+                const clamped = maxPendenzaAccumulo !== null ? Math.min(raw, maxPendenzaAccumulo) : raw;
+                controller.setAccumulo(track.id, { pendenzaGradi: clamped });
+              }}> °
           </div>
-          <p class="muted">0° = acqua (pelo libero orizzontale, come un invaso). Maggiore di 0° = detrito, secondo il suo angolo di riposo.</p>
+          {#if maxPendenzaAccumulo !== null}
+            <p class="muted">Pendenza massima consigliata su questo versante: {maxPendenzaAccumulo}°.</p>
+          {/if}
           <div class="row">
             <span>Lato monte rilevato dal terreno</span>
             <button class="btn" onclick={() => invertiLatoMonte(track.id)}>Inverti lato</button>

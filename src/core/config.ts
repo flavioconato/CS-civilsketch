@@ -117,3 +117,10 @@ export const ACCUMULO_DEFAULT_PENDENZA = 0;
  * terreno molto pianeggiante non incontrerebbe mai il terreno da sola).
  */
 export const ACCUMULO_MAX_REACH = 300;
+
+/**
+ * Numero massimo di nodi del campo 2D di accumulo (`computeAccumuloField`): oltre questa soglia la
+ * portata di ricerca si riduce automaticamente, per non scandire milioni di nodi a ogni modifica su
+ * un DTM molto fine o una traccia molto lunga.
+ */
+export const ACCUMULO_FIELD_MAX_CELLS = 400_000;

@@ -2,6 +2,7 @@
   import type { SezionePunto } from '../core/types';
   import { snapValue } from '../core/snap';
   import { fmt } from '../core/format';
+  import InfoButton from './InfoButton.svelte';
 
   let {
     punti, snapD, snapDz, onChange,
@@ -114,6 +115,7 @@
   {:else}
     Passa il mouse sul grafico per leggere le quote in metri.
   {/if}
+  <InfoButton text="Trascina un punto per modellarne la quota. Doppio click su un punto (o la ✕ qui sotto) per eliminarlo, &quot;Aggiungi punto&quot; per crearne uno nuovo." />
 </div>
 
 <svg
@@ -155,7 +157,6 @@
     ><title>Doppio click per eliminare · d={p.d.toFixed(2)} m, quota={p.dz.toFixed(2)} m</title></circle>
   {/each}
 </svg>
-<p class="muted">Trascina un punto per modellarne la quota. Doppio click su un punto (o la ✕ qui sotto) per eliminarlo, "Aggiungi punto" per crearne uno nuovo.</p>
 
 <ul class="pts sez-pts">
   <li class="sez-head muted">

@@ -4,7 +4,7 @@ import { sceneY } from './coords';
 import { formatChainage, pointAtProgressive, progressives, sampledProgressives, trackLength } from '../core/polyline';
 import { livellettaElevation } from '../core/livelletta';
 import { muroCrestElevation, MURO_MIN_HEIGHT } from '../core/muro';
-import { accumuloMaxReach, accumuloRayAt, accumuloTanPendenza } from '../core/accumulo';
+import { computeAccumuloField } from '../core/accumulo';
 import { heightAt } from '../dem/dem';
 import {
   OPERA_CATEGORY_COLORS, TRACK_DESIGN_COLOR, TRACK_NATURAL_COLOR, TRACK_SAMPLE_STEP,
@@ -15,18 +15,11 @@ import type { ThreeContext } from './scene';
 /** Piccolo scostamento verticale per evitare z-fighting col terreno sottostante. */
 const DRAPE_OFFSET = 0.25;
 
-/**
- * Passi trasversali minimo e massimo della mesh dell'accumulo, dallo sbarramento fino alla massima
- * distanza a monte: il passo effettivo si adegua alla portata e al passo del DTM (si veda
- * `buildAccumuloMesh`), per non "scavalcare" un dosso stretto che dovrebbe chiudere la superficie.
- */
-const ACCUMULO_D_STEPS_MIN = 8;
-const ACCUMULO_D_STEPS_MAX = 160;
-
 interface TrackVisual {
   natural: THREE.Mesh | null;
   design: THREE.Mesh | null;
   wall: THREE.Mesh | null;
+  /** Non smaltita qui: il suo ciclo di vita è nella cache `accumuloCache` (si veda `rebuild`). */
   accumulo: THREE.Mesh | null;
   vertexMarkers: THREE.Mesh[];
   labels: HTMLDivElement[];
@@ -48,6 +41,13 @@ export class TracksLayer {
   private designMatByCategory = new Map<OperaCategoria | 'default', THREE.MeshStandardMaterial>();
   private wallMatByCategory = new Map<OperaCategoria | 'default', THREE.MeshStandardMaterial>();
   private accumuloMatByType = new Map<'acqua' | 'detrito', THREE.MeshStandardMaterial>();
+  /**
+   * Ultima mesh di accumulo calcolata per traccia, tenuta viva fuori dal ciclo di
+   * distruzione/ricostruzione di `rebuild`: il campo 2D è pesante (flood-fill sul DTM), quindi
+   * durante il trascinamento di un vertice si continua a mostrare l'ultima calcolata invece di
+   * ricalcolarla a ogni fotogramma (si veda il parametro `liveAccumulo` di `rebuild`).
+   */
+  private accumuloCache = new Map<number, THREE.Mesh>();
 
   constructor(private ctx: ThreeContext, private labelsContainer: HTMLElement) {
     this.ctx.scene.add(this.group);
@@ -101,9 +101,14 @@ export class TracksLayer {
     if (v.natural) { v.natural.geometry.dispose(); this.group.remove(v.natural); }
     if (v.design) { v.design.geometry.dispose(); this.group.remove(v.design); }
     if (v.wall) { v.wall.geometry.dispose(); this.group.remove(v.wall); }
-    if (v.accumulo) { v.accumulo.geometry.dispose(); this.group.remove(v.accumulo); }
+    // v.accumulo NON si smaltisce qui: vive in accumuloCache (si veda `rebuild`).
     v.vertexMarkers.forEach((m) => this.group.remove(m));
     v.labels.forEach((el) => el.remove());
+  }
+
+  private disposeAccumuloCacheEntry(trackId: number): void {
+    const mesh = this.accumuloCache.get(trackId);
+    if (mesh) { mesh.geometry.dispose(); this.group.remove(mesh); this.accumuloCache.delete(trackId); }
   }
 
   private sampledS(length: number): number[] {
@@ -177,73 +182,61 @@ export class TracksLayer {
   }
 
   /**
-   * Superficie di accumulo a monte di uno sbarramento (§8.2/8.3/8.4): parte dalla quota di
-   * sommità (contro lo sbarramento) e **risale** verso monte con la pendenza impostata (0° = acqua,
-   * piatta; maggiore = detrito). Risale, non scende: il detrito, potendo mantenere una pendenza
-   * propria a differenza dell'acqua, riesce a inseguire la risalita del terreno molto più a lungo di
-   * un pelo libero piatto, trattenendone di più (si veda `computeAccumulo` per il dettaglio fisico).
-   * Esattamente come la sezione di scavo/riporto viene tagliata dove incontra il terreno (§7), ogni
-   * fascia trasversale marcia verso monte e si taglia alla prima intersezione con il terreno
-   * naturale: i vertici oltre quel punto collassano tutti sul punto di taglio stesso (area nulla,
-   * non visibile), invece di proseguire adagiati sul terreno fino in fondo — il che lascerebbe
-   * comunque un velo colorato (per quanto piatto) esteso ben oltre l'accumulo vero, come se si
-   * "proiettasse" all'infinito.
+   * Superficie di accumulo a monte di uno sbarramento (§8.2/8.3/8.4): non più una fascia larga
+   * quanto il coronamento, ma la vera area 2D del campo calcolato da `computeAccumuloField`, che
+   * incontra il terreno a 360° (fianchi compresi). Si emette una faccia solo dove tutti e quattro
+   * i nodi della cella sono allagati, per non lasciare un bordo frastagliato che sporge dal terreno.
    */
   private buildAccumuloMesh(track: Traccia, displayDem: Dem, exag: number): THREE.Mesh | null {
     if (!track.muro?.accumulo.attivo || track.vertices.length < 2) return null;
-    const muro = track.muro;
-    const length = trackLength(track.vertices);
-    const sList = this.sampledS(length);
-    const n = sList.length;
-    const crest = muroCrestElevation(displayDem, track.vertices, muro);
-    const tanP = accumuloTanPendenza(muro);
-    const maxReach = accumuloMaxReach();
-    const lato = muro.accumulo.lato;
-    // Passo trasversale legato al passo del DTM: con una portata ampia (tipico dell'acqua) un
-    // numero fisso di passi rischierebbe di scavalcare un dosso stretto senza mai campionarlo,
-    // mancando così il taglio che dovrebbe fermare la superficie.
-    const dSteps = Math.max(ACCUMULO_D_STEPS_MIN, Math.min(ACCUMULO_D_STEPS_MAX, Math.ceil(maxReach / displayDem.cell)));
+    const field = computeAccumuloField(displayDem, track.vertices, track.muro);
+    if (!field) return null;
+    const { cols, rows, c0, r0, cell, flooded, surface } = field;
 
+    const vertIndex = new Int32Array(cols * rows).fill(-1);
     const pos: number[] = [];
-    let anyAccumulo = false;
-    for (let i = 0; i < n; i++) {
-      const { px, pz, nx, nz } = accumuloRayAt(track.vertices, length, sList[i], lato);
-      let cut: [number, number, number] | null = null;
-      for (let j = 0; j <= dSteps; j++) {
-        const d = (maxReach * j) / dSteps;
-        const x = px + nx * d, z = pz + nz * d;
-        if (cut) { pos.push(...cut); continue; }
-        const terrainZ = heightAt(displayDem, x, z);
-        const surface = crest + tanP * d;
-        if (surface > terrainZ) {
-          anyAccumulo = true;
-          pos.push(x, (surface - displayDem.zmin) * exag, z);
-        } else {
-          cut = [x, (terrainZ - displayDem.zmin) * exag, z];
-          pos.push(...cut);
-        }
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const li = r * cols + c;
+        if (!flooded[li]) continue;
+        vertIndex[li] = pos.length / 3;
+        pos.push((c0 + c) * cell, (surface[li] - displayDem.zmin) * exag, (r0 + r) * cell);
       }
     }
-    if (!anyAccumulo) return null;
+    if (!pos.length) return null;
 
     const idx: number[] = [];
-    const at = (i: number, j: number) => i * (dSteps + 1) + j;
-    for (let i = 0; i < n - 1; i++) {
-      for (let j = 0; j < dSteps; j++) {
-        idx.push(at(i, j), at(i + 1, j), at(i + 1, j + 1), at(i, j), at(i + 1, j + 1), at(i, j + 1));
+    for (let r = 0; r < rows - 1; r++) {
+      for (let c = 0; c < cols - 1; c++) {
+        const a = vertIndex[r * cols + c];
+        const b = vertIndex[r * cols + c + 1];
+        const cc = vertIndex[(r + 1) * cols + c];
+        const d = vertIndex[(r + 1) * cols + c + 1];
+        if (a < 0 || b < 0 || cc < 0 || d < 0) continue;
+        idx.push(a, cc, b, b, cc, d);
       }
     }
+    if (!idx.length) return null;
 
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pos), 3));
-    g.setIndex(idx);
+    g.setIndex(new THREE.BufferAttribute(new (pos.length / 3 > 65535 ? Uint32Array : Uint16Array)(idx), 1));
     g.computeVertexNormals();
-    return new THREE.Mesh(g, this.accumuloMaterial(muro.accumulo.pendenzaGradi));
+    return new THREE.Mesh(g, this.accumuloMaterial(track.muro.accumulo.pendenzaGradi));
   }
 
-  rebuild(naturalDem: Dem, displayDem: Dem, exag: number, tracks: Traccia[], selectedId: number | null): void {
+  /**
+   * `liveAccumulo`: quando è `false` (trascinamento di un vertice in corso), il campo 2D
+   * dell'accumulo non si ricalcola — troppo pesante per ogni fotogramma — e si continua a mostrare
+   * l'ultima mesh calcolata (si veda `accumuloCache`); tutto il resto della traccia resta comunque
+   * fluido durante il trascinamento.
+   */
+  rebuild(naturalDem: Dem, displayDem: Dem, exag: number, tracks: Traccia[], selectedId: number | null, liveAccumulo = true): void {
     for (const v of this.byId.values()) this.disposeVisual(v);
     this.byId.clear();
+
+    const liveIds = new Set(tracks.map((t) => t.id));
+    for (const id of [...this.accumuloCache.keys()]) if (!liveIds.has(id)) this.disposeAccumuloCacheEntry(id);
 
     for (const track of tracks) {
       const visual: TrackVisual = { natural: null, design: null, wall: null, accumulo: null, vertexMarkers: [], labels: [], labelPositions: [] };
@@ -262,8 +255,15 @@ export class TracksLayer {
         if (track.kind === 'oggetto') {
           visual.wall = this.buildWallMesh(track, displayDem, exag);
           if (visual.wall) this.group.add(visual.wall);
-          visual.accumulo = this.buildAccumuloMesh(track, displayDem, exag);
-          if (visual.accumulo) this.group.add(visual.accumulo);
+
+          if (!track.muro?.accumulo.attivo) {
+            this.disposeAccumuloCacheEntry(track.id);
+          } else if (liveAccumulo) {
+            this.disposeAccumuloCacheEntry(track.id);
+            const mesh = this.buildAccumuloMesh(track, displayDem, exag);
+            if (mesh) { this.accumuloCache.set(track.id, mesh); this.group.add(mesh); }
+          }
+          visual.accumulo = this.accumuloCache.get(track.id) ?? null;
         } else {
           const designPts = sList.map((s) => {
             const p = pointAtProgressive(track.vertices, s);

@@ -76,6 +76,17 @@ input[type=checkbox]{accent-color:var(--accent);width:16px;height:16px}
 .x{border:0;background:transparent;color:var(--muted);cursor:pointer;padding:2px 6px;border-radius:4px}
 .x:hover{background:var(--hover);color:var(--ink)}
 
+/* Riga che non deve mai andare a capo: etichetta sopra, controllo a piena larghezza sotto */
+.row-stack{margin:8px 0;font-size:14px}
+.row-stack > .row-stack-label{display:flex;align-items:center;justify-content:space-between;gap:8px;white-space:nowrap}
+.row-stack input[type=range]{width:100%;margin-top:6px;accent-color:var(--accent)}
+
+/* Info button: spiegazioni lunghe fuori vista finché non richieste */
+.info-wrap{position:relative;display:inline-flex;vertical-align:middle;margin-left:6px}
+.info-btn{width:18px;height:18px;border-radius:50%;border:1px solid var(--line);background:var(--panel-solid);color:var(--muted);font:italic 12px Georgia,serif;line-height:1;display:grid;place-items:center;cursor:pointer;padding:0}
+.info-btn:hover{background:var(--hover);color:var(--ink)}
+.info-popover{position:absolute;left:50%;top:24px;transform:translateX(-50%);z-index:9;width:200px;max-width:calc(100vw - 32px);background:var(--panel-solid);border:1px solid var(--line);border-radius:8px;box-shadow:var(--shadow);padding:9px 11px;font-size:13px;line-height:1.45;color:var(--ink)}
+
 /* Popup traccia: non blocca il canvas, si apre da sola alla creazione/selezione di una traccia */
 #trackPopup{position:fixed;left:70px;top:64px;width:320px;max-height:calc(100vh - 100px);overflow:auto;background:var(--panel);border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow);z-index:8;padding:4px 0}
 #trackPopup section{padding:12px 16px;border-bottom:1px solid var(--line)}
